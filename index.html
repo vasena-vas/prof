@@ -248,6 +248,46 @@ const SHEETS = [
   {name:'ИЭиУ',            gid:'865508239'}
 ];
 
+// Включаем горизонтальный скролл для широких таблиц (много колонок)
+(function(){
+  const s = document.createElement('style');
+  s.textContent = '.table-card{overflow-x:auto !important;} .table-card table{min-width:max-content;}';
+  document.head.appendChild(s);
+})();
+
+// ============================================================
+//  СОПОСТАВЛЕНИЕ КОЛОНОК: что написано в шапке → красивый label
+// ============================================================
+const COLUMN_LABELS = [
+  {pattern:/^№?$|^n$|^no$|^номер$/i,          label:'№',              numeric:true,  short:true},
+  {pattern:/групп|назван|направлен|специальн/i, label:'Группа',        numeric:false},
+  {pattern:/^курс/i,                          label:'Курс',            numeric:true,  short:true},
+  {pattern:/по\s*приказу|^приказ/i,           label:'По приказу',      numeric:true},
+  {pattern:/исключ/i,                         label:'Исключения',      numeric:true},
+  {pattern:/доступн/i,                        label:'Доступно',        numeric:true},
+  {pattern:/заявлен|заявк|подано/i,           label:'Заявления',       numeric:true},
+  {pattern:/%|процент|вступаем/i,             label:'% вступаемости',  numeric:true, isPct:true},
+  {pattern:/старост/i,                        label:'Староста',        numeric:false},
+  {pattern:/ответствен|куратор/i,             label:'Ответственный',   numeric:false},
+  {pattern:/коммент|примеч|заметк/i,          label:'Комментарий',     numeric:false},
+  {pattern:/контакт|телефон|почт|email|@/i,   label:'Контакт',         numeric:false},
+  {pattern:/фио|ф\.\s*и\.\s*о|фамил|имя/i,    label:'ФИО',             numeric:false},
+  {pattern:/дата|обновлен|изменен/i,          label:'Обновлено',       numeric:false},
+  {pattern:/балл|рейтинг/i,                   label:'Балл',            numeric:true},
+  {pattern:/статус/i,                         label:'Статус',          numeric:false},
+  {pattern:/долг|задолжен/i,                  label:'Задолженность',   numeric:false}
+];
+
+function humanizeHeader(raw, idx){
+  const c = (raw||'').trim().toLowerCase();
+  for(const m of COLUMN_LABELS){
+    if(m.pattern.test(c)){
+      return {label:m.label, numeric:!!m.numeric, isPct:!!m.isPct, short:!!m.short};
+    }
+  }
+  return {label: raw || ('Колонка ' + (idx+1)), numeric:false, isPct:false, short:false};
+}
+
 // ============================================================
 //  ЦВЕТА / ФОРМАТ
 // ============================================================
@@ -321,8 +361,7 @@ function jsonpLoad(url){
 
     const timer = setTimeout(function(){
       if(finished) return;
-      finished = true;
-      cleanup();
+      finished = true; cleanup();
       reject(new Error('timeout'));
     }, 25000);
 
@@ -334,21 +373,18 @@ function jsonpLoad(url){
 
     window[cbName] = function(data){
       if(finished) return;
-      finished = true;
-      cleanup();
+      finished = true; cleanup();
       if(!data || data.status === 'error'){
         const msg = (data && data.errors && data.errors[0] &&
                     (data.errors[0].detailed_message || data.errors[0].message)) || 'gviz error';
-        reject(new Error(msg));
-        return;
+        reject(new Error(msg)); return;
       }
       resolve(data);
     };
 
     script.onerror = function(){
       if(finished) return;
-      finished = true;
-      cleanup();
+      finished = true; cleanup();
       reject(new Error('script error'));
     };
 
@@ -357,26 +393,17 @@ function jsonpLoad(url){
   });
 }
 
-// ============================================================
-//  Загрузка ОДНОГО листа с ретраями и двумя URL-fallback'ами
-// ============================================================
 async function fetchOneSheet(gid){
   const urls = [
     'https://docs.google.com/spreadsheets/d/' + SPREADSHEET_ID + '/gviz/tq?gid=' + gid,
     'https://docs.google.com/spreadsheets/d/e/' + PUB_ID + '/gviz/tq?gid=' + gid
   ];
-
   let lastErr = null;
-  // 3 попытки на каждый URL
   for(let attempt = 0; attempt < 3; attempt++){
     for(const url of urls){
-      try {
-        return await jsonpLoad(url);
-      } catch(e){
-        lastErr = e;
-      }
+      try { return await jsonpLoad(url); }
+      catch(e){ lastErr = e; }
     }
-    // Пауза перед следующей попыткой
     await new Promise(function(r){ setTimeout(r, 1000 * (attempt + 1)); });
   }
   throw lastErr || new Error('не удалось загрузить');
@@ -405,63 +432,116 @@ function gvizToRows(data){
 }
 
 // ============================================================
-//  Парсер листа
+//  ПАРСЕР — теперь читает ВСЕ колонки из шапки
 // ============================================================
 function parseInstituteRows(rows){
+  // Ищем строку-заголовок по ключевым словам
   let headerRow = -1;
   for(let i=0; i<rows.length; i++){
     const r = (rows[i]||[]).map(function(c){return (c||'').trim().toLowerCase();});
     if(r.some(function(c){
-      return c.includes('по приказу') || c.includes('доступно') || c.includes('заявл');
+      return c.includes('по приказу') || c.includes('доступно') ||
+             c.includes('заявл') || c.includes('групп') || c.includes('направлен');
     })){ headerRow = i; break; }
   }
   if(headerRow === -1) throw new Error('нет заголовка');
 
-  const header = (rows[headerRow]||[]).map(function(c){return (c||'').trim().toLowerCase();});
-  const colIdx = {
-    group: header.findIndex(function(c){return c.includes('групп') || c.includes('назван');}),
-    order: header.findIndex(function(c){return c.includes('по приказу') || c.includes('приказ');}),
-    excl:  header.findIndex(function(c){return c.includes('исключ');}),
-    avail: header.findIndex(function(c){return c.includes('доступно');}),
-    apps:  header.findIndex(function(c){return c.includes('заявл');}),
-    pct:   header.findIndex(function(c){return c.includes('%') || c.includes('вступаем');})
-  };
-  if(colIdx.order < 0 || colIdx.avail < 0){
-    throw new Error('нет нужных колонок');
+  const headerRaw = rows[headerRow] || [];
+
+  // Собираем ВСЕ непустые колонки с их label'ами
+  const columns = [];
+  for(let i = 0; i < headerRaw.length; i++){
+    const raw = (headerRaw[i]||'').trim();
+    if(!raw) continue;
+    const meta = humanizeHeader(raw, i);
+    columns.push({
+      idx: i,
+      key: 'c' + i,
+      raw: raw,
+      label: meta.label,
+      numeric: meta.numeric,
+      isPct: meta.isPct,
+      short: meta.short
+    });
   }
 
-  const groupHeader = (colIdx.group >= 0) ? header[colIdx.group] : '';
-  const allBak = groupHeader.includes('бакалавр') || groupHeader.includes('бак');
+  // Индексы ключевых колонок для агрегации
+  const colIdx = {
+    group: columns.findIndex(function(c){return c.label === 'Группа';}),
+    order: columns.findIndex(function(c){return c.label === 'По приказу';}),
+    excl:  columns.findIndex(function(c){return c.label === 'Исключения';}),
+    avail: columns.findIndex(function(c){return c.label === 'Доступно';}),
+    apps:  columns.findIndex(function(c){return c.label === 'Заявления';}),
+    pct:   columns.findIndex(function(c){return c.isPct;})
+  };
+  if(colIdx.order < 0 || colIdx.avail < 0){
+    throw new Error('нет колонок "По приказу"/"Доступно"');
+  }
+
+  const groupHeaderRaw = colIdx.group >= 0 ? headerRaw[columns[colIdx.group].idx] : '';
+  const allBak = /бакалавр|бак/i.test(groupHeaderRaw || '');
 
   const groups = [];
   for(let i=headerRow+1; i<rows.length; i++){
     const r = rows[i];
     if(!r || r.length === 0) continue;
-    const groupName = colIdx.group >= 0 ? (r[colIdx.group]||'').trim() : '';
+
+    // Имя группы — из колонки «Группа», иначе первая непустая нецифровая ячейка
+    let groupName = '';
+    if(colIdx.group >= 0){
+      groupName = (r[columns[colIdx.group].idx]||'').trim();
+    }
+    if(!groupName){
+      for(let j=0; j<r.length; j++){
+        const v = (r[j]||'').trim();
+        if(v && !/^\d+([.,]\d+)?$/.test(v)){ groupName = v; break; }
+      }
+    }
     if(!groupName) continue;
     const low = groupName.toLowerCase();
-    if(low.includes('итого') || low.includes('всего')) continue;
+    if(low.includes('итого') || low.includes('всего') || low === 'total') continue;
 
-    const num = function(idx){
-      if(idx < 0) return 0;
-      const v = parseFloat((r[idx]||'').toString().replace(',', '.').replace(/\s/g,''));
+    // Собираем ВСЕ значения по колонкам
+    const values = {};
+    columns.forEach(function(col){
+      values[col.key] = (r[col.idx] !== undefined && r[col.idx] !== null) ? r[col.idx] : '';
+    });
+
+    const numAt = function(colPos){
+      if(colPos < 0) return 0;
+      const col = columns[colPos];
+      if(!col) return 0;
+      const v = parseFloat(String(values[col.key]).replace(/\s/g,'').replace(',', '.'));
       return isNaN(v) ? 0 : v;
     };
-    const o  = num(colIdx.order);
-    const e  = num(colIdx.excl);
-    const a  = num(colIdx.avail);
-    const ap = num(colIdx.apps);
-    let p = num(colIdx.pct);
-    if(p > 1.5) { /* уже проценты */ }
-    else if(p > 0) { p = p * 100; }
+
+    const o  = numAt(colIdx.order);
+    const e  = numAt(colIdx.excl);
+    const a  = numAt(colIdx.avail);
+    const ap = numAt(colIdx.apps);
+
+    // % берём из листа, если есть; иначе считаем
+    let p = 0;
+    if(colIdx.pct >= 0){
+      p = numAt(colIdx.pct);
+      if(p > 0 && p <= 1.5) p = p * 100;   // 0.85 → 85
+    }
     if(!p && a > 0) p = ap / a * 100;
 
+    // Уровень: весь лист bak / эвристика по имени
     let level = allBak ? 'bak' : 'magasp';
     if(!allBak && /(^|\s)б[- ]?\d|бак/i.test(groupName)) level = 'bak';
 
-    groups.push({g:groupName, o:o, e:e, a:a, ap:ap, p:Math.round(p*10)/10, level:level});
+    groups.push({
+      g: groupName,
+      values: values,
+      o: o, e: e, a: a, ap: ap,
+      p: Math.round(p*10)/10,
+      level: level
+    });
   }
-  return groups;
+
+  return { groups: groups, columns: columns };
 }
 
 function sumGroups(groups){
@@ -472,7 +552,7 @@ function sumGroups(groups){
 }
 
 // ============================================================
-//  ГЛАВНАЯ ЛОГИКА — ПОСЛЕДОВАТЕЛЬНАЯ загрузка (без rate limit)
+//  ГЛАВНАЯ ЛОГИКА
 // ============================================================
 let detail = {};
 let institutes = [];
@@ -493,26 +573,34 @@ async function loadAll(){
     try {
       const data = await fetchOneSheet(sheet.gid);
       const rows = gvizToRows(data);
-      const groups = parseInstituteRows(rows);
+      const parsed = parseInstituteRows(rows);
+      const groups = parsed.groups;
+      const columns = parsed.columns;
+
       const bak    = groups.filter(function(g){return g.level === 'bak';});
       const magasp = groups.filter(function(g){return g.level === 'magasp';});
+
       results[sheet.name] = {
+        columns: columns,
         total:  sumGroups(groups),
         bak:    {groups: bak,    sum: sumGroups(bak)},
         magasp: {groups: magasp, sum: sumGroups(magasp)}
       };
-      console.log('✓', sheet.name, '—', groups.length, 'групп');
+
+      console.log('%c✓ ' + sheet.name + ' (' + groups.length + ' групп)',
+        'color:#22c55e;font-weight:bold',
+        '\n  Колонки: ' + columns.map(function(c){return c.label;}).join(' | '));
     } catch(err){
-      console.error('✗', sheet.name, err);
+      console.error('✗ ' + sheet.name, err);
       errors.push(sheet.name + ' (' + err.message + ')');
       results[sheet.name] = {
+        columns: [],
         total:  {order:0,excl:0,avail:0,apps:0,pct:0},
         bak:    {groups:[], sum:{order:0,excl:0,avail:0,apps:0,pct:0}},
         magasp: {groups:[], sum:{order:0,excl:0,avail:0,apps:0,pct:0}}
       };
     }
 
-    // Пауза между листами, чтобы не попасть под rate limit
     if(i < SHEETS.length - 1){
       await new Promise(function(r){ setTimeout(r, 400); });
     }
@@ -592,9 +680,18 @@ function renderPanel(){
     return;
   }
 
+  // Определяем набор групп и их суммарную статистику
   let sum, groups, showGroups;
-  if(currentLevel === 'total'){ sum = d.total; groups = null; showGroups = false; }
-  else { sum = d[currentLevel].sum; groups = d[currentLevel].groups; showGroups = true; }
+  if(currentLevel === 'total'){
+    // Для «Общее членство» тоже показываем таблицу всех групп института
+    sum = d.total;
+    groups = d.bak.groups.concat(d.magasp.groups);
+    showGroups = groups.length > 0;
+  } else {
+    sum = d[currentLevel].sum;
+    groups = d[currentLevel].groups;
+    showGroups = true;
+  }
 
   const scaleName = scaleForLevel[currentLevel];
   const meta = colorFor(sum.pct, scaleName);
@@ -612,26 +709,45 @@ function renderPanel(){
     '<div class="badge-lg c-' + meta.cls + '">' + fmtPct(sum.pct) + '%</div>' + capHtml + '</div>' +
     '</div>';
 
-  if(showGroups){
-    html += '<div class="legend">' + legendHtml(scaleName === 'bak' ? 'bak' : 'total') + '</div>';
-    if(groups.length === 0){
-      html += '<div class="empty-note">В этом институте нет групп на уровне «' +
-        levelLabels[currentLevel] + '».</div>';
-    } else {
-      html += '<div class="table-card"><table><thead><tr>' +
-        '<th>Группа</th><th class="num">По приказу</th><th class="num">Искл.</th>' +
-        '<th class="num">Доступно</th><th class="num">Заявления</th><th>% вступаемости</th>' +
-        '</tr></thead><tbody>';
-      groups.forEach(function(g){
-        html += '<tr><td class="inst">' + g.g + '</td>' +
-          '<td class="num">' + fmt(g.o) + '</td>' +
-          '<td class="num">' + fmt(g.e) + '</td>' +
-          '<td class="num">' + fmt(g.a) + '</td>' +
-          '<td class="num">' + fmt(g.ap) + '</td>' +
-          '<td>' + pctCellHtml(g.p, scaleName) + '</td></tr>';
+  // ---- Таблица со ВСЕМИ колонками из листа ----
+  const columns = d.columns || [];
+  if(showGroups && columns.length){
+    html += '<div class="table-card"><table><thead><tr>';
+    columns.forEach(function(col){
+      const cls = col.numeric ? ' class="num"' : '';
+      html += '<th' + cls + '>' + col.label + '</th>';
+    });
+    html += '</tr></thead><tbody>';
+
+    groups.forEach(function(g){
+      html += '<tr>';
+      columns.forEach(function(col){
+        const rawVal = g.values[col.key];
+        if(col.isPct){
+          // Колонка % — рендерим бейджем с цветом по scale
+          html += '<td>' + pctCellHtml(g.p, scaleName) + '</td>';
+        } else if(col.label === 'Группа'){
+          html += '<td class="inst">' + (rawVal || '') + '</td>';
+        } else if(col.numeric){
+          const numStr = String(rawVal == null ? '' : rawVal).trim();
+          if(!numStr){ html += '<td class="num"></td>'; }
+          else {
+            const numVal = parseFloat(numStr.replace(/\s/g,'').replace(',', '.'));
+            html += '<td class="num">' + (isNaN(numVal) ? numStr : fmt(numVal)) + '</td>';
+          }
+        } else {
+          html += '<td>' + (rawVal == null ? '' : rawVal) + '</td>';
+        }
       });
-      html += '</tbody></table></div>';
-    }
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+
+    html += '<div class="legend" style="margin-top:14px;">' + legendHtml(scaleName === 'bak' ? 'bak' : 'total') + '</div>';
+  } else if(!columns.length){
+    html += '<div class="empty-note">Не удалось распознать колонки в листе «' + currentInst + '».</div>';
+  } else {
+    html += '<div class="empty-note">Нет групп на уровне «' + levelLabels[currentLevel] + '».</div>';
   }
 
   panel.innerHTML = html;
