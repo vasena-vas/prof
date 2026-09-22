@@ -127,7 +127,7 @@
 
   .empty-note{color:var(--grey-dim);font-size:13.5px;padding:22px 4px;text-align:center;}
   .error-note{color:#fca5a5;font-size:13px;padding:14px 18px;text-align:left;
-    background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.35);border-radius:10px;margin-top:12px;}
+    background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.35);border-radius:10px;margin-top:12px;line-height:1.6;}
   .ok-note{color:#86efac;font-size:12.5px;padding:10px 14px;text-align:center;
     background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:10px;margin-top:12px;}
 
@@ -226,21 +226,18 @@
     <div class="empty-note">Загрузка данных…</div>
   </div>
 
-  <footer>Все данные — с листов институтов Google Таблицы (лист «Общее» не использовался).</footer>
+  <footer>Все данные — с листов институтов Google Таблицы.</footer>
 </div>
 
 <script>
 // ============================================================
-//  ГЛАВНАЯ НАСТРОЙКА
+//  НАСТРОЙКА
 // ============================================================
-// SPREADSHEET_ID — это ID из ОБЫЧНОЙ ссылки на таблицу:
-//   https://docs.google.com/spreadsheets/d/  <<<ВОТ_ЭТО_МЕСТО>>>  /edit
-// (НЕ из ссылки Publish to web вида 2PACX-...)
-//
-// Требование: таблица должна быть доступна как «Все, у кого есть ссылка → Читатель»
-// Или «Файл → Поделиться → Опубликовать в интернете».
-// ============================================================
+// Обычный ID таблицы (из адресной строки между /d/ и /edit):
 const SPREADSHEET_ID = '1uUfi3gZAs5altLItKSFTwfIUiHoaWSRJbH-cwbrwezw';
+
+// ID публикации (из ссылок Publish to web, начинается с 2PACX-):
+const PUB_ID = '2PACX-1vQI3pQT1SbM2YZBD3luM8g7dru8wM-8bxups9R8JWufLOAvT7mhcRH5l7KH6eOkkDB9J5_9ndXAxp_R';
 
 const SHEETS = [
   {name:'ИЭиАС',           gid:'587953836'},
@@ -255,7 +252,7 @@ const SHEETS = [
 ];
 
 // ============================================================
-//  ЦВЕТОВЫЕ ШКАЛЫ
+//  ЦВЕТА
 // ============================================================
 const SCALES = {
   bak:   {purple:95, green:85, yellow:70, orange:65},
@@ -268,7 +265,6 @@ const COLOR_META = {
   orange:{cls:'orange', label:'Внимание'},
   red:   {cls:'red',    label:'Нужно стараться'}
 };
-
 function colorFor(pct, scaleName){
   const s = SCALES[scaleName];
   if(pct >= s.purple) return COLOR_META.purple;
@@ -319,10 +315,10 @@ document.getElementById('legendTotal').innerHTML = legendHtml('total');
 })();
 
 // ============================================================
-//  ЗАГРУЗКА ДАННЫХ ЧЕРЕЗ JSONP (gviz)
-//  Обходит CORS полностью — работает на GitHub Pages.
+//  JSONP-ЗАГРУЗКА (gviz) — обходит CORS
+//  Пробуем 2 URL последовательно: обычный и publish-to-web
 // ============================================================
-function fetchGviz(gid){
+function jsonpLoad(url){
   return new Promise(function(resolve, reject){
     const cbName = '__gviz_' + Math.random().toString(36).slice(2) + Date.now();
     const script = document.createElement('script');
@@ -332,8 +328,8 @@ function fetchGviz(gid){
       if(finished) return;
       finished = true;
       cleanup();
-      reject(new Error('Таймаут 15 сек (gid=' + gid + ')'));
-    }, 15000);
+      reject(new Error('timeout'));
+    }, 20000);
 
     function cleanup(){
       clearTimeout(timer);
@@ -358,16 +354,29 @@ function fetchGviz(gid){
       if(finished) return;
       finished = true;
       cleanup();
-      reject(new Error('Не удалось загрузить скрипт (gid=' + gid + ')'));
+      reject(new Error('script error'));
     };
 
-    script.src = 'https://docs.google.com/spreadsheets/d/' + SPREADSHEET_ID +
-      '/gviz/tq?gid=' + gid + '&tqx=responseHandler:' + cbName + '&_=' + Date.now();
+    script.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'tqx=responseHandler:' + cbName + '&_=' + Date.now();
     document.body.appendChild(script);
   });
 }
 
-// Преобразуем ответ gviz в массив строк (как CSV)
+function fetchGviz(gid){
+  // Два варианта URL — если первый не сработает, попробуем второй
+  const urls = [
+    'https://docs.google.com/spreadsheets/d/' + SPREADSHEET_ID + '/gviz/tq?gid=' + gid,
+    'https://docs.google.com/spreadsheets/d/e/' + PUB_ID + '/gviz/tq?gid=' + gid
+  ];
+
+  let p = Promise.reject();
+  urls.forEach(function(u){
+    p = p.catch(function(){ return jsonpLoad(u); });
+  });
+  return p;
+}
+
+// Преобразуем gviz в массив строк
 function gvizToRows(data){
   if(!data || !data.table) return [];
   const cols = data.table.cols || [];
@@ -388,7 +397,7 @@ function gvizToRows(data){
 }
 
 // ============================================================
-//  ПАРСЕР ЛИСТА ИНСТИТУТА
+//  ПАРСЕР
 // ============================================================
 function parseInstituteRows(rows){
   let headerRow = -1;
@@ -436,7 +445,6 @@ function parseInstituteRows(rows){
     else if(p > 0) { p = p * 100; }
     if(!p && a > 0) p = ap / a * 100;
 
-    // Определяем уровень: явно по заголовку, иначе по имени группы
     let level = allBak ? 'bak' : 'magasp';
     if(!allBak && /(^|\s)б[- ]?\d|бак/i.test(groupName)) level = 'bak';
 
@@ -479,7 +487,7 @@ async function loadAll(){
       };
     } catch(err){
       console.error('Лист «' + sheet.name + '»:', err);
-      errors.push(sheet.name + ': ' + err.message);
+      errors.push(sheet.name + ' (' + err.message + ')');
       results[sheet.name] = {
         total:  {order:0,excl:0,avail:0,apps:0,pct:0},
         bak:    {groups:[], sum:{order:0,excl:0,avail:0,apps:0,pct:0}},
@@ -507,12 +515,12 @@ async function loadAll(){
     const note = document.createElement('div');
     note.className = 'error-note';
     note.innerHTML = '<b>Не удалось загрузить листы:</b><br>' + errors.join('<br>') +
-      '<br><br>Проверь, что таблица открыта как «Все, у кого есть ссылка → Читатель».';
+      '<br><br>Открой таблицу → «Поделиться» → поставь «Все, у кого есть ссылка → Читатель».';
     panel.appendChild(note);
   } else if(institutes.length){
     const ok = document.createElement('div');
     ok.className = 'ok-note';
-    ok.textContent = 'Данные успешно загружены из Google Таблицы.';
+    ok.textContent = '✓ Данные загружены из Google Таблицы';
     panel.appendChild(ok);
   }
 }
