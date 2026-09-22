@@ -233,10 +233,7 @@
 // ============================================================
 //  НАСТРОЙКА
 // ============================================================
-// Обычный ID таблицы (из адресной строки между /d/ и /edit):
 const SPREADSHEET_ID = '1uUfi3gZAs5altLItKSFTwfIUiHoaWSRJbH-cwbrwezw';
-
-// ID публикации (из ссылок Publish to web, начинается с 2PACX-):
 const PUB_ID = '2PACX-1vQI3pQT1SbM2YZBD3luM8g7dru8wM-8bxups9R8JWufLOAvT7mhcRH5l7KH6eOkkDB9J5_9ndXAxp_R';
 
 const SHEETS = [
@@ -252,7 +249,7 @@ const SHEETS = [
 ];
 
 // ============================================================
-//  ЦВЕТА
+//  ЦВЕТА / ФОРМАТ
 // ============================================================
 const SCALES = {
   bak:   {purple:95, green:85, yellow:70, orange:65},
@@ -275,7 +272,6 @@ function colorFor(pct, scaleName){
 }
 function fmt(n){ return Math.round(n).toLocaleString("ru-RU"); }
 function fmtPct(p){ return p.toFixed(1).replace('.',','); }
-
 function pctCellHtml(pct, scaleName){
   const meta = colorFor(pct, scaleName);
   const cap = meta.cls === 'red' ? '<div class="pct-caption">' + meta.label + '</div>' : '';
@@ -315,8 +311,7 @@ document.getElementById('legendTotal').innerHTML = legendHtml('total');
 })();
 
 // ============================================================
-//  JSONP-ЗАГРУЗКА (gviz) — обходит CORS
-//  Пробуем 2 URL последовательно: обычный и publish-to-web
+//  JSONP (обходит CORS)
 // ============================================================
 function jsonpLoad(url){
   return new Promise(function(resolve, reject){
@@ -329,7 +324,7 @@ function jsonpLoad(url){
       finished = true;
       cleanup();
       reject(new Error('timeout'));
-    }, 20000);
+    }, 25000);
 
     function cleanup(){
       clearTimeout(timer);
@@ -362,21 +357,34 @@ function jsonpLoad(url){
   });
 }
 
-function fetchGviz(gid){
-  // Два варианта URL — если первый не сработает, попробуем второй
+// ============================================================
+//  Загрузка ОДНОГО листа с ретраями и двумя URL-fallback'ами
+// ============================================================
+async function fetchOneSheet(gid){
   const urls = [
     'https://docs.google.com/spreadsheets/d/' + SPREADSHEET_ID + '/gviz/tq?gid=' + gid,
     'https://docs.google.com/spreadsheets/d/e/' + PUB_ID + '/gviz/tq?gid=' + gid
   ];
 
-  let p = Promise.reject();
-  urls.forEach(function(u){
-    p = p.catch(function(){ return jsonpLoad(u); });
-  });
-  return p;
+  let lastErr = null;
+  // 3 попытки на каждый URL
+  for(let attempt = 0; attempt < 3; attempt++){
+    for(const url of urls){
+      try {
+        return await jsonpLoad(url);
+      } catch(e){
+        lastErr = e;
+      }
+    }
+    // Пауза перед следующей попыткой
+    await new Promise(function(r){ setTimeout(r, 1000 * (attempt + 1)); });
+  }
+  throw lastErr || new Error('не удалось загрузить');
 }
 
-// Преобразуем gviz в массив строк
+// ============================================================
+//  gviz → массив строк
+// ============================================================
 function gvizToRows(data){
   if(!data || !data.table) return [];
   const cols = data.table.cols || [];
@@ -397,7 +405,7 @@ function gvizToRows(data){
 }
 
 // ============================================================
-//  ПАРСЕР
+//  Парсер листа
 // ============================================================
 function parseInstituteRows(rows){
   let headerRow = -1;
@@ -407,7 +415,7 @@ function parseInstituteRows(rows){
       return c.includes('по приказу') || c.includes('доступно') || c.includes('заявл');
     })){ headerRow = i; break; }
   }
-  if(headerRow === -1) throw new Error('Не найден заголовок');
+  if(headerRow === -1) throw new Error('нет заголовка');
 
   const header = (rows[headerRow]||[]).map(function(c){return (c||'').trim().toLowerCase();});
   const colIdx = {
@@ -418,6 +426,9 @@ function parseInstituteRows(rows){
     apps:  header.findIndex(function(c){return c.includes('заявл');}),
     pct:   header.findIndex(function(c){return c.includes('%') || c.includes('вступаем');})
   };
+  if(colIdx.order < 0 || colIdx.avail < 0){
+    throw new Error('нет нужных колонок');
+  }
 
   const groupHeader = (colIdx.group >= 0) ? header[colIdx.group] : '';
   const allBak = groupHeader.includes('бакалавр') || groupHeader.includes('бак');
@@ -433,7 +444,7 @@ function parseInstituteRows(rows){
 
     const num = function(idx){
       if(idx < 0) return 0;
-      const v = parseFloat((r[idx]||'').toString().replace(',', '.'));
+      const v = parseFloat((r[idx]||'').toString().replace(',', '.').replace(/\s/g,''));
       return isNaN(v) ? 0 : v;
     };
     const o  = num(colIdx.order);
@@ -461,7 +472,7 @@ function sumGroups(groups){
 }
 
 // ============================================================
-//  ГЛАВНАЯ ЛОГИКА
+//  ГЛАВНАЯ ЛОГИКА — ПОСЛЕДОВАТЕЛЬНАЯ загрузка (без rate limit)
 // ============================================================
 let detail = {};
 let institutes = [];
@@ -472,10 +483,15 @@ let currentLevel = 'total';
 async function loadAll(){
   const results = {};
   const errors = [];
+  const pill = document.getElementById('instCountPill');
+  const panel = document.getElementById('instPanel');
 
-  await Promise.all(SHEETS.map(async function(sheet){
-    try{
-      const data = await fetchGviz(sheet.gid);
+  for(let i = 0; i < SHEETS.length; i++){
+    const sheet = SHEETS[i];
+    pill.textContent = 'Загрузка ' + (i+1) + '/' + SHEETS.length + ': ' + sheet.name;
+
+    try {
+      const data = await fetchOneSheet(sheet.gid);
       const rows = gvizToRows(data);
       const groups = parseInstituteRows(rows);
       const bak    = groups.filter(function(g){return g.level === 'bak';});
@@ -485,8 +501,9 @@ async function loadAll(){
         bak:    {groups: bak,    sum: sumGroups(bak)},
         magasp: {groups: magasp, sum: sumGroups(magasp)}
       };
+      console.log('✓', sheet.name, '—', groups.length, 'групп');
     } catch(err){
-      console.error('Лист «' + sheet.name + '»:', err);
+      console.error('✗', sheet.name, err);
       errors.push(sheet.name + ' (' + err.message + ')');
       results[sheet.name] = {
         total:  {order:0,excl:0,avail:0,apps:0,pct:0},
@@ -494,7 +511,12 @@ async function loadAll(){
         magasp: {groups:[], sum:{order:0,excl:0,avail:0,apps:0,pct:0}}
       };
     }
-  }));
+
+    // Пауза между листами, чтобы не попасть под rate limit
+    if(i < SHEETS.length - 1){
+      await new Promise(function(r){ setTimeout(r, 400); });
+    }
+  }
 
   detail = results;
   institutes = SHEETS.map(function(s){
@@ -510,17 +532,15 @@ async function loadAll(){
   currentInst = institutes.length ? institutes[0].name : null;
   renderAll();
 
-  const panel = document.getElementById('instPanel');
   if(errors.length){
     const note = document.createElement('div');
     note.className = 'error-note';
-    note.innerHTML = '<b>Не удалось загрузить листы:</b><br>' + errors.join('<br>') +
-      '<br><br>Открой таблицу → «Поделиться» → поставь «Все, у кого есть ссылка → Читатель».';
+    note.innerHTML = '<b>Не загрузились листы:</b><br>' + errors.join('<br>');
     panel.appendChild(note);
   } else if(institutes.length){
     const ok = document.createElement('div');
     ok.className = 'ok-note';
-    ok.textContent = '✓ Данные загружены из Google Таблицы';
+    ok.textContent = '✓ Все ' + SHEETS.length + ' листов загружены';
     panel.appendChild(ok);
   }
 }
