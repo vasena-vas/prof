@@ -202,7 +202,7 @@
   </header>
 
   <div class="deadline-banner">
-    <div class="txt">Дедлайн по вступаемости — отчитаться нужно до <b>5 октября 2026, 23:59 (Магнитогорск, UTC+5)</b></div>
+    <div class="txt">Дедлайн по вступаемости — отчитаться нужно до <b>5 октября 2026, 17:00 (Магнитогорск, UTC+5)</b></div>
     <div class="countdown" id="countdown">
       <div class="cd-cell"><div class="cd-val" id="cdDays">00</div><div class="cd-lbl">дней</div></div>
       <div class="cd-sep">:</div>
@@ -359,7 +359,7 @@ document.getElementById('legendTotal').innerHTML = legendHtml('total');
 (function(){
   // Явно задаём часовой пояс Магнитогорска через смещение +05:00,
   // чтобы отсчёт был корректным независимо от часового пояса браузера.
-  const deadline = new Date('2026-10-05T23:59:59+05:00');
+  const deadline = new Date('2026-10-05T17:00:00+05:00');
 
   const elDays  = document.getElementById('cdDays');
   const elHours = document.getElementById('cdHours');
